@@ -276,9 +276,9 @@ python3 ~/.claude/skills/guru/scripts/generate_hero_image.py \
 ```
 2. If it fails, check `~/.claude/skills/guru/templates/fallback/` for backup images
 
-**8b — Landing Page Generation (v0 AI-Powered):**
+**8b — Landing Page Generation:**
 
-1. Run the landing page generator script with `--publish` to get a shareable v0 link:
+1. Run the landing page generator:
 ```bash
 python3 ~/.claude/skills/guru/scripts/generate_landing_page.py \
     --outline "$OUTPUT_DIR/course/outline.json" \
@@ -289,16 +289,11 @@ python3 ~/.claude/skills/guru/scripts/generate_landing_page.py \
     --publish
 ```
 
-2. The script handles everything automatically:
-   - **Primary:** Calls v0 Model API (`v0-1.5-md`) to generate a premium, dark-themed standalone HTML landing page
-   - **Retry:** If v0 output is truncated, retries with higher token limit (32K)
-   - **Fallback:** If v0 fails or `V0_API_KEY` is not set, uses `templates/landing-page/index.html` with placeholder replacement
-   - **Publish (`--publish`):** After HTML generation, publishes to v0 Platform API — creates a project + chat with course data, v0 generates a full Next.js app with shareable demo URL (`https://demo-xxx.vusercontent.net`). Takes 2-4 minutes.
-   - Color schemes and fonts are resolved automatically from niche presets (see script for full table)
+2. The script has two layers:
+   - **Template (always runs):** Generates a local HTML file from `templates/landing-page/index.html` with placeholder replacement. No API key needed. Color schemes and fonts resolved from niche presets.
+   - **v0 Platform (`--publish` flag):** After local HTML is generated, publishes course data to v0 Platform API — v0 builds a full Next.js app with shareable demo URL (`https://demo-xxx.vusercontent.net`). Takes 2-4 minutes. Requires `V0_API_KEY`. Omit `--publish` to skip.
 
-3. Check stdout for the method used (`v0`, `v0 (with warnings)`, or `template`) and narrate accordingly:
-   - v0 success: "Our AI designer just built this page from scratch — custom layout, responsive design, the works."
-   - Template fallback: "Here's our sales page — professional template, real course data, deployed design."
+3. Narrate: "Here's our sales page — professional design, real course data, every word written to convert."
 
 4. **If `--publish` succeeded**, capture the Demo URL and Editor URL from stdout. Save them for the final summary in Step 9.
    - Narrate: "And here's the shareable link — anyone can see this page right now on their phone."
@@ -307,7 +302,6 @@ python3 ~/.claude/skills/guru/scripts/generate_landing_page.py \
    - If demo URL available: Use Chrome DevTools MCP to navigate to the demo URL
    - Otherwise: Navigate to `file://$OUTPUT_DIR/landing-page/index.html`
    - Take a screenshot to show the audience
-   - Narrate: "Every word on this page was written to convert."
 
 **Color Presets (reference — embedded in the script):**
 | Niche | Primary | Font |
@@ -385,7 +379,7 @@ Track elapsed time from Step 1. If:
 - **After Step 4 (transcripts):** >8 minutes elapsed → reduce `--limit` to 30 for remaining channels
 - **After Step 5 (analysis):** >12 minutes elapsed → skip user approval in Step 6, proceed directly
 - **After Step 6 (outline):** >13 minutes elapsed → use shorter copywriter brief (skip research details)
-- **After Step 7 (copy):** >16 minutes elapsed → skip hero image gen (use fallback), skip v0 (use `--force-fallback` flag)
+- **After Step 7 (copy):** >16 minutes elapsed → skip hero image gen (use fallback), skip `--publish` (template-only, faster)
 - **After Step 8 (LP):** >19 minutes elapsed → deploy immediately, skip preview
 - **Total >20 minutes:** Wrap up wherever you are, deploy what's ready
 
