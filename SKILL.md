@@ -17,19 +17,36 @@ You are running a **live demo** for an audience of small business owners. Every 
 - **Output root:** `~/Desktop/Guru/output/`
 - **Backup:** `~/Desktop/Guru/backup/`
 
+## API Credentials
+
+All API keys are stored as environment variables in `~/.zshrc`. The keys load automatically on shell start.
+
+| Variable | Location | Status |
+|----------|----------|--------|
+| `GEMINI_API_KEY` | `~/.zshrc` | **Required** — Gemini Flash for analysis, outline, hero image |
+| `V0_API_KEY` | `~/.zshrc` | Optional — v0 Platform for `--publish` flag |
+| `DEEPGRAM_API_KEY` | `~/.zshrc` | Recommended — Deepgram Nova-2 for `--deepgram-first` |
+
+If a key is missing from the environment, check `~/.claude/credentials.md` for stored values and add to `~/.zshrc`. Full setup docs: `~/.claude/skills/guru/SETUP.md`.
+
+---
+
 ## Pre-Flight Check
 
 Before starting the wizard, silently verify:
-1. `python3 -c "from google import genai; print('OK')"` — Gemini SDK
-2. `python3 -c "from youtube_transcript_api import YouTubeTranscriptApi; print('OK')"` — youtube-transcript-api
-3. `python3 -c "import scrapetube; print('OK')"` — scrapetube
-4. `echo $GEMINI_API_KEY | head -c 10` — API key exists
-5. `which wrangler` — wrangler available
-6. `which yt-dlp` — yt-dlp available
-7. `test -f ~/bin/download_transcripts_v2.py && echo 'OK'` — transcript downloader v2
-8. `echo $V0_API_KEY | head -c 10` — v0 API key (optional — template fallback works without it)
+1. `echo $GEMINI_API_KEY | head -c 10` — Gemini API key exists
+2. `echo $V0_API_KEY | head -c 10` — v0 API key (optional — template works without it)
+3. `echo $DEEPGRAM_API_KEY | head -c 10` — Deepgram key (optional — YouTube captions work without it)
+4. `python3 -c "from google import genai; print('OK')"` — Gemini SDK
+5. `python3 -c "from youtube_transcript_api import YouTubeTranscriptApi; print('OK')"` — youtube-transcript-api
+6. `python3 -c "import scrapetube; print('OK')"` — scrapetube
+7. `which wrangler` — wrangler available
+8. `which yt-dlp` — yt-dlp available
+9. `test -f ~/bin/download_transcripts_v2.py && echo 'OK'` — transcript downloader v2
 
-If anything fails (except #8 which is optional), tell the user what's missing and stop. Don't proceed with a broken setup.
+**If `GEMINI_API_KEY` is missing:** Read `~/.claude/credentials.md` and `~/.zshrc` to find/export it. This is the only hard blocker.
+**If other keys are missing (#2, #3):** Note it and proceed — fallbacks exist.
+**If tools/packages fail (#4-9):** Tell the user what's missing and stop.
 
 ---
 
