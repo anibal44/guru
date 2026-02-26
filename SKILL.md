@@ -13,7 +13,7 @@ You are running a **live demo** for an audience of small business owners. Every 
 - **Scripts:** `~/.claude/skills/guru/scripts/`
 - **Templates:** `~/.claude/skills/guru/templates/landing-page/index.html`
 - **References:** `~/.claude/skills/guru/references/`
-- **Transcript downloader:** `~/bin/download_transcripts_v2.py` (installed via video-downloader skill)
+- **Transcript downloader:** `~/.claude/skills/guru/scripts/download_transcripts.py`
 - **Output root:** `~/Desktop/Guru/output/`
 - **Backup:** `~/Desktop/Guru/backup/`
 
@@ -25,7 +25,7 @@ All API keys are stored as environment variables in `~/.zshrc`. The keys load au
 |----------|----------|--------|
 | `GEMINI_API_KEY` | `~/.zshrc` | **Required** — Gemini Flash for analysis, outline, hero image |
 | `V0_API_KEY` | `~/.zshrc` | Optional — v0 Platform for `--publish` flag |
-| `DEEPGRAM_API_KEY` | `~/.zshrc` | Recommended — Deepgram Nova-2 for `--deepgram-first` |
+| `DEEPGRAM_API_KEY` | `~/.zshrc` | Optional — Deepgram Nova-2 fallback for videos without subtitles |
 
 If a key is missing from the environment, check `~/.claude/credentials.md` for stored values and add to `~/.zshrc`. Full setup docs: `~/.claude/skills/guru/SETUP.md`.
 
@@ -36,17 +36,23 @@ If a key is missing from the environment, check `~/.claude/credentials.md` for s
 Before starting the wizard, silently verify:
 1. `echo $GEMINI_API_KEY | head -c 10` — Gemini API key exists
 2. `echo $V0_API_KEY | head -c 10` — v0 API key (optional — template works without it)
-3. `echo $DEEPGRAM_API_KEY | head -c 10` — Deepgram key (optional — YouTube captions work without it)
+3. `echo $DEEPGRAM_API_KEY | head -c 10` — Deepgram key (optional — yt-dlp subs work without it)
 4. `python3 -c "from google import genai; print('OK')"` — Gemini SDK
 5. `python3 -c "from youtube_transcript_api import YouTubeTranscriptApi; print('OK')"` — youtube-transcript-api
 6. `python3 -c "import scrapetube; print('OK')"` — scrapetube
 7. `which wrangler` — wrangler available
 8. `which yt-dlp` — yt-dlp available
-9. `test -f ~/bin/download_transcripts_v2.py && echo 'OK'` — transcript downloader v2
+9. `test -f ~/.claude/skills/guru/scripts/download_transcripts.py && echo 'OK'` — transcript downloader
+10. `test -f ~/.cache/guru/yt-cookies.txt && echo 'OK'` — YouTube cookies (prevents IP blocking)
 
 **If `GEMINI_API_KEY` is missing:** Read `~/.claude/credentials.md` and `~/.zshrc` to find/export it. This is the only hard blocker.
 **If other keys are missing (#2, #3):** Note it and proceed — fallbacks exist.
 **If tools/packages fail (#4-9):** Tell the user what's missing and stop.
+**If cookies missing (#10):** Export them now:
+```bash
+mkdir -p ~/.cache/guru && yt-dlp --cookies-from-browser chrome --cookies ~/.cache/guru/yt-cookies.txt --skip-download "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+```
+This prevents YouTube IP-blocking during transcript download. Only needs to be done once (refreshes automatically).
 
 ---
 
@@ -131,28 +137,29 @@ mkdir -p "$OUTPUT_DIR"/{research,transcripts,course,landing-page/assets}
 1. Print progress box
 2. For each selected channel, run:
 ```bash
-python3 ~/bin/download_transcripts_v2.py \
+python3 ~/.claude/skills/guru/scripts/download_transcripts.py \
     --channel {HANDLE_WITHOUT_AT} \
     --output "$OUTPUT_DIR/transcripts" \
-    --threads 5 \
+    --threads 10 \
     --limit 50 \
-    --deepgram-first \
-    --name "{HANDLE}_transcripts_v2"
+    --name "{HANDLE}_transcripts"
 ```
 3. Run channels sequentially (parallel would cause rate limits)
 4. After each channel completes, report: "✓ [Channel Name] — [X] videos, [Y] transcripts captured"
 5. After all complete, print totals: "Downloaded [TOTAL] transcripts from [X] channels"
 
+**How it works (automatic — no flags needed):**
+- **Method 1: youtube-transcript-api** — fast, no subprocess. Tries this first.
+- **Method 2: yt-dlp subtitle extraction** — if YouTube IP-blocks the API, auto-switches to yt-dlp. Downloads subtitles only (no audio), supports cookies. This is the key fallback that prevents demo failures.
+- **Method 3: Deepgram** — last resort for videos with NO subtitles at all. Add `--deepgram` flag if `DEEPGRAM_API_KEY` is set.
+- Script outputs JSON with `"source"` field (youtube/yt-dlp/deepgram) and `"[Transcript not available]"` for failures.
+- If cookies exist at `~/.cache/guru/yt-cookies.txt`, the script uses them automatically.
+
 **Important:**
-- **Primary transcription: Deepgram** (`--deepgram-first`) — downloads audio via yt-dlp, transcribes with Deepgram Nova-2. Higher quality than auto-captions. Requires `DEEPGRAM_API_KEY`.
-- **Fallback: youtube-transcript-api** — if Deepgram fails for a video, falls back to YouTube's auto-generated captions (free, fast, no audio download).
-- If `DEEPGRAM_API_KEY` is not set, omit `--deepgram-first` and use `--deepgram` as optional fallback, or just use YouTube captions only.
 - Use `--limit 50` per channel to keep demo fast (50 videos × 5 channels = 250 max)
 - The `--channel` flag takes the handle WITHOUT the @ symbol
-- Use `--threads 5` when using Deepgram (caps parallelism for audio downloads)
-- The v2 script outputs JSON with `"source"` field (youtube/deepgram/whisper) and uses `"[Transcript not available]"` for failures
-- **Optional:** Add `--whisper` flag for free local transcription fallback (slower, no API key needed)
-- If scrapetube fails for a channel, try with `yt-dlp --flat-playlist "https://www.youtube.com/@{HANDLE}/videos" --print id | head -50` to get video IDs
+- If scrapetube fails for video listing, the script automatically falls back to yt-dlp
+- **If IP-blocked and no cookies:** Script prints a fix command. Run it once to export Chrome cookies, then re-run.
 
 **Narrate during download:** "This is pulling real transcripts from real YouTube videos — every word these creators have said. We're building our course on actual expert knowledge, not made-up content."
 
