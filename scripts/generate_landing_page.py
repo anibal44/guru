@@ -1,27 +1,36 @@
 #!/usr/bin/env python3
 """
 Guru — Landing Page Generator
-Generates a local HTML landing page from template, and optionally publishes
-a premium version to v0 Platform (shareable Next.js app).
+v0 AI-powered landing page generation with template fallback.
 
+Primary: v0 Chat Completions API (v0-1.5-md) — generates a complete standalone HTML page.
+Fallback: Local template with placeholder replacement (no API needed).
+
+Timeout: 5 minutes for v0. If exceeded, falls back to template automatically.
 No pip dependencies — uses urllib only.
 
 Usage:
-    # Local HTML only (always works, no API key needed):
     python3 generate_landing_page.py --outline outline.json --niche "productivity" --output index.html
-
-    # Local HTML + v0 Platform publish (shareable demo URL):
-    python3 generate_landing_page.py --outline outline.json --niche "productivity" --output index.html --publish
+    python3 generate_landing_page.py --outline outline.json --niche "productivity" --output index.html --template-only
 """
 
 import sys
 import os
 import json
+import re
 import argparse
 import time
 from pathlib import Path
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 from datetime import datetime
+
+# ─── API Key (env var only — GitHub blocks hardcoded Vercel tokens) ───────────
+
+V0_API_KEY = os.environ.get("V0_API_KEY", "")
+V0_API_URL = "https://api.v0.dev/v1/chat/completions"
+V0_MODEL = "v0-1.5-md"
+V0_TIMEOUT = 300  # 5 minutes
 
 # ─── Niche Color/Font Presets ────────────────────────────────────────────────
 
@@ -42,8 +51,6 @@ DEFAULT_COLORS = {"primary": "#6366f1", "primary_dark": "#4f46e5", "secondary": 
 
 MODULE_EMOJIS = ["🎯", "🧱", "⏱️", "🧠", "🚀", "🔄", "💡", "📊", "🔥", "🏆"]
 PAIN_EMOJIS = ["😤", "😰", "🔥", "📧", "💔", "🔄", "📱", "😓", "🤯", "⏰"]
-
-V0_PLATFORM_API = "https://api.v0.dev/v1"
 
 # ─── Data Loading ────────────────────────────────────────────────────────────
 
@@ -66,11 +73,239 @@ def resolve_colors(niche):
     niche_lower = niche.lower()
     for key, colors in NICHE_COLORS.items():
         if key in niche_lower or niche_lower in key:
-            return colors
-    return DEFAULT_COLORS
+            return dict(colors)
+    return dict(DEFAULT_COLORS)
 
 
-# ─── Template Generator (local HTML) ────────────────────────────────────────
+# ─── v0 AI Generation (PRIMARY) ─────────────────────────────────────────────
+
+
+def build_v0_prompt(outline, sales_copy, niche, total_videos, colors, font):
+    """Build the system + user prompt for v0 to generate a landing page."""
+    course_title = outline.get("course_title", f"Master {niche.title()}")
+    course_subtitle = outline.get("course_subtitle", f"The complete {niche} course")
+    total_modules = outline.get("total_modules", len(outline.get("modules", [])))
+    total_lessons = outline.get("total_lessons", 0)
+    pain_points = outline.get("pain_points", [])
+    modules = outline.get("modules", [])
+
+    # Build module data
+    module_data = []
+    for m in modules:
+        lessons = []
+        for les in m.get("lessons", []):
+            lessons.append(f"  - {m['number']}.{les['number']}: {les['title']}")
+        module_data.append(
+            f"Module {m['number']}: {m['title']} ({len(m.get('lessons', []))} lessons)\n"
+            + "\n".join(lessons)
+        )
+
+    pain_text = "\n".join(f"- {p}" for p in pain_points[:8])
+    modules_text = "\n\n".join(module_data)
+
+    sales_section = ""
+    if sales_copy:
+        # Take first ~2500 chars of sales copy for headlines/tone
+        sales_section = f"""
+
+SALES COPY (use for headlines, subheadlines, CTA text, and tone of voice):
+{sales_copy[:2500]}"""
+
+    system_prompt = f"""You are an expert web designer. Generate a SINGLE, COMPLETE, STANDALONE HTML file for a premium dark-themed course landing page.
+
+CRITICAL REQUIREMENTS:
+- Output ONLY valid HTML. No markdown, no explanation, no React, no JSX, no components.
+- Single HTML file with ALL CSS inline in a <style> tag and ALL JS inline in a <script> tag.
+- NO external dependencies except Google Fonts.
+- Dark theme: background #0a0a0a, cards #141414, text #f5f5f5.
+- Mobile-first responsive design.
+- Smooth scroll behavior, IntersectionObserver reveal animations.
+
+COLOR SCHEME:
+- Primary: {colors['primary']}
+- Primary Dark: {colors['primary_dark']}
+- Secondary: {colors['secondary']}
+- Accent: {colors['accent']}
+- Google Font: {font}
+
+PAGE STRUCTURE (7 sections, in this exact order):
+
+1. HERO — Full viewport height. Course title with gradient highlight on last 2 words. Subtitle below. Stats bar showing "{total_modules} Modules", "{total_lessons} Lessons", "{total_videos}+ Videos Analyzed". Primary CTA button "Get Instant Access →" linking to #pricing. Hero image placeholder (assets/hero.jpg).
+
+2. PAIN POINTS — Section title "Sound Familiar?". Grid of emoji cards showing audience pain points. Each card has an emoji icon and text.
+
+3. MODULES — Section title "What You'll Learn". Card grid with module number, emoji icon, title, description, lesson count badge. Gradient top border on hover.
+
+4. CURRICULUM — Section title "Full Curriculum". Expandable accordion per module. First module open by default. Each shows lesson number, title, and learning outcome. Chevron rotates on toggle.
+
+5. PRICING — Section with id="pricing". Single pricing card: "$97" large, "one-time payment" subtitle, feature checklist with check marks, "Get Instant Access" CTA button, "30-Day Money-Back Guarantee" badge below.
+
+6. FAQ — Accordion with 5 questions. Include: "Who is this for?", "How is this different from free YouTube?", "How long do I have access?", "What if it's not for me?", "Do I need prior experience?".
+
+7. FOOTER — Final CTA "Ready to Start?" with button, copyright © {datetime.now().year}.
+
+ANIMATIONS:
+- Use IntersectionObserver to add "revealed" class when elements enter viewport.
+- Staggered reveal delays (reveal-delay-1 through reveal-delay-5).
+- Accordion toggle with smooth height transition.
+- Button hover: translateY(-2px) + enhanced shadow.
+- Cards hover: translateY(-4px) + border color change.
+
+IMPORTANT:
+- Start with <!DOCTYPE html>
+- End with </html>
+- Include <meta charset="UTF-8"> and <meta name="viewport">
+- The output must be ONLY the HTML file content, nothing else."""
+
+    user_message = f"""Generate the landing page for this course:
+
+COURSE TITLE: {course_title}
+SUBTITLE: {course_subtitle}
+NICHE: {niche}
+PRICE: $97 one-time payment
+GUARANTEE: 30-day money-back, no questions asked
+
+PAIN POINTS:
+{pain_text}
+
+MODULES AND LESSONS:
+{modules_text}
+{sales_section}
+
+Generate the complete HTML file now. Output ONLY the HTML — no markdown fences, no explanation."""
+
+    return system_prompt, user_message
+
+
+def extract_html(content):
+    """Extract HTML from v0 response. Handles markdown fences or raw HTML."""
+    # Try markdown code fence: ```html ... ```
+    match = re.search(r"```html\s*\n(.*?)```", content, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+
+    # Try any code fence: ``` ... ```
+    match = re.search(r"```\s*\n(.*?)```", content, re.DOTALL)
+    if match:
+        inner = match.group(1).strip()
+        if inner.lower().startswith("<!doctype") or inner.lower().startswith("<html"):
+            return inner
+
+    # Raw HTML (starts with doctype or html tag)
+    content_stripped = content.strip()
+    if content_stripped.lower().startswith("<!doctype") or content_stripped.lower().startswith("<html"):
+        return content_stripped
+
+    return None
+
+
+def validate_html(html, course_title):
+    """Basic validation that the HTML is a complete landing page."""
+    errors = []
+    html_lower = html.lower()
+
+    if not html_lower.startswith("<!doctype html>"):
+        errors.append("Missing <!DOCTYPE html>")
+    if "</html>" not in html_lower:
+        errors.append("Missing </html>")
+    if "<style" not in html_lower:
+        errors.append("No <style> tag (CSS missing)")
+    if 'id="pricing"' not in html_lower and "id='pricing'" not in html_lower:
+        errors.append("No #pricing section (CTA target missing)")
+    if html_lower.count("<section") < 3:
+        errors.append(f"Only {html_lower.count('<section')} sections (need 3+)")
+
+    size_kb = len(html.encode("utf-8")) / 1024
+    if size_kb < 5:
+        errors.append(f"Too small ({size_kb:.0f}KB — likely truncated)")
+    if size_kb > 200:
+        errors.append(f"Too large ({size_kb:.0f}KB)")
+
+    # Check for React/JSX contamination
+    if "import react" in html_lower or "from 'react'" in html_lower or "jsx" in html_lower:
+        errors.append("Contains React/JSX (need plain HTML)")
+
+    return errors
+
+
+def try_v0_generation(outline, sales_copy, niche, total_videos, colors, font, max_tokens=16000):
+    """Call v0 API to generate landing page HTML. Returns HTML string or None."""
+    system_prompt, user_message = build_v0_prompt(outline, sales_copy, niche, total_videos, colors, font)
+
+    payload = json.dumps({
+        "model": V0_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        "max_completion_tokens": max_tokens,
+        "stream": False,
+    }).encode("utf-8")
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {V0_API_KEY}",
+    }
+
+    req = Request(V0_API_URL, data=payload, headers=headers, method="POST")
+
+    start = time.time()
+    try:
+        resp = urlopen(req, timeout=V0_TIMEOUT)
+        data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        print(f"   [v0] HTTP {e.code}: {body[:200]}")
+        if e.code == 429:
+            print("   [v0] Rate limited — falling back to template")
+        return None
+    except (URLError, TimeoutError, OSError) as e:
+        elapsed = time.time() - start
+        print(f"   [v0] Request failed after {elapsed:.0f}s: {e}")
+        return None
+
+    elapsed = time.time() - start
+
+    # Extract content from response
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError):
+        print(f"   [v0] Unexpected response structure")
+        return None
+
+    finish_reason = data.get("choices", [{}])[0].get("finish_reason", "unknown")
+    usage = data.get("usage", {})
+    tokens_out = usage.get("completion_tokens", 0)
+
+    print(f"   [v0] Response: {elapsed:.0f}s, {tokens_out} tokens, finish={finish_reason}")
+
+    # Check for truncation
+    if finish_reason == "length":
+        print(f"   [v0] Output truncated at {max_tokens} tokens")
+        return None  # Caller can retry with higher max_tokens
+
+    # Extract HTML
+    html = extract_html(content)
+    if not html:
+        print(f"   [v0] Could not extract HTML from response")
+        print(f"   [v0] First 200 chars: {content[:200]}")
+        return None
+
+    # Validate
+    course_title = outline.get("course_title", "")
+    errors = validate_html(html, course_title)
+    if errors:
+        print(f"   [v0] Validation errors: {'; '.join(errors)}")
+        # Only fail on critical errors
+        critical = [e for e in errors if "React" in e or "truncated" in e or "Missing <!DOCTYPE" in e]
+        if critical:
+            return None
+        print(f"   [v0] Non-critical — using anyway")
+
+    return html
+
+
+# ─── Template Fallback ───────────────────────────────────────────────────────
 
 
 def generate_pain_cards(pain_points):
@@ -215,139 +450,17 @@ def generate_template(outline, sales_copy, niche, total_videos, colors, font):
     return html
 
 
-# ─── v0 Platform Publishing ──────────────────────────────────────────────────
-
-
-def publish_to_v0(api_key, outline, sales_copy, niche, total_videos):
-    """Publish to v0 Platform — generates a full Next.js app with shareable demo URL.
-
-    Uses v0 Platform API:
-    1. POST /v1/projects — create project
-    2. POST /v1/chats — send course data, v0 builds a complete app
-    Returns (demo_url, editor_url) or (None, None) on failure.
-    """
-    course_title = outline.get("course_title", f"Master {niche.title()}")
-    course_subtitle = outline.get("course_subtitle", f"The complete {niche} course")
-    total_modules = outline.get("total_modules", len(outline.get("modules", [])))
-    total_lessons = outline.get("total_lessons", 0)
-    pain_points = outline.get("pain_points", [])
-    modules = outline.get("modules", [])
-
-    module_lines = []
-    for m in modules:
-        lesson_count = len(m.get("lessons", []))
-        module_lines.append(f"- Module {m['number']}: {m['title']} ({lesson_count} lessons)")
-
-    pain_lines = "\n".join(f"- {p}" for p in pain_points[:8])
-    module_text = "\n".join(module_lines)
-
-    sales_excerpt = ""
-    if sales_copy:
-        sales_excerpt = f"\n\nSALES COPY EXCERPT (use for headlines, CTAs, tone):\n{sales_copy[:3000]}"
-
-    message = f"""Build a premium dark-themed landing page for an online course.
-
-COURSE: {course_title}
-SUBTITLE: {course_subtitle}
-NICHE: {niche}
-PRICE: $97 one-time
-MODULES: {total_modules} | LESSONS: {total_lessons} | VIDEOS ANALYZED: {total_videos}
-
-PAIN POINTS:
-{pain_lines}
-
-MODULES:
-{module_text}
-{sales_excerpt}
-
-REQUIREMENTS:
-- Dark theme (#0a0a0a background)
-- 7 sections: Hero (full viewport, stats bar, CTA), Pain Points (emoji cards), Modules (card grid), Curriculum (accordion), Pricing ($97, guarantee badge), FAQ (accordion), Footer
-- Gradient accents, scroll animations, mobile responsive
-- 30-day money-back guarantee
-- CTA buttons link to #pricing section
-- Professional, premium feel — not generic"""
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-
-    # Step 1: Create project
-    try:
-        print("[v0 Platform] Creating project...")
-        project_payload = json.dumps({
-            "name": f"Guru {niche.title()} Landing Page",
-        }).encode("utf-8")
-
-        req = Request(
-            f"{V0_PLATFORM_API}/projects",
-            data=project_payload,
-            headers=headers,
-            method="POST",
-        )
-        resp = urlopen(req, timeout=30)
-        project = json.loads(resp.read().decode("utf-8"))
-        project_id = project["id"]
-        print(f"[v0 Platform] Project created: {project_id}")
-    except Exception as e:
-        print(f"[v0 Platform] Failed to create project: {e}")
-        return None, None
-
-    # Step 2: Create chat with course data (v0 generates full Next.js app)
-    try:
-        print("[v0 Platform] Generating page (this takes 2-4 minutes)...")
-        chat_payload = json.dumps({
-            "message": message,
-            "projectId": project_id,
-        }).encode("utf-8")
-
-        req = Request(
-            f"{V0_PLATFORM_API}/chats",
-            data=chat_payload,
-            headers=headers,
-            method="POST",
-        )
-
-        start = time.time()
-        resp = urlopen(req, timeout=300)
-        elapsed = time.time() - start
-        chat = json.loads(resp.read().decode("utf-8"))
-
-        chat_id = chat.get("id", "unknown")
-        editor_url = f"https://v0.app/chat/{chat_id}"
-
-        demo_url = chat.get("latestVersion", {}).get("demoUrl")
-
-        if demo_url:
-            print(f"[v0 Platform] Page generated in {elapsed:.0f}s")
-            print(f"[v0 Platform] Demo URL:   {demo_url}")
-            print(f"[v0 Platform] Editor URL: {editor_url}")
-            return demo_url, editor_url
-        else:
-            print(f"[v0 Platform] Chat created but no demoUrl in response")
-            print(f"[v0 Platform] Editor URL: {editor_url}")
-            return None, editor_url
-
-    except TimeoutError:
-        print("[v0 Platform] Chat creation timed out (300s)")
-        return None, None
-    except Exception as e:
-        print(f"[v0 Platform] Failed to create chat: {e}")
-        return None, None
-
-
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate landing page (template + v0 Platform publish)")
+    parser = argparse.ArgumentParser(description="Generate landing page (v0 AI primary, template fallback)")
     parser.add_argument("--outline", "-o", required=True, help="Path to outline.json")
     parser.add_argument("--sales-copy", "-s", default=None, help="Path to sales-copy.md (optional)")
     parser.add_argument("--niche", "-n", required=True, help="Niche name")
     parser.add_argument("--total-videos", "-v", type=int, default=250, help="Total videos analyzed (default: 250)")
     parser.add_argument("--output", required=True, help="Output HTML file path")
-    parser.add_argument("--publish", action="store_true", help="Publish to v0 Platform for shareable demo URL (requires V0_API_KEY)")
+    parser.add_argument("--template-only", action="store_true", help="Skip v0, use template directly")
     args = parser.parse_args()
 
     # Load data
@@ -363,40 +476,46 @@ def main():
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # ─── Generate local HTML from template ────────────────────────────
-    print("[Template] Generating local HTML...")
-    html = generate_template(outline, sales_copy, niche, total_videos, colors, font)
+    method = "template"
+    html = None
+
+    # ─── PRIMARY: v0 AI Generation ──────────────────────────────────
+    if not args.template_only and V0_API_KEY:
+        print("[v0] Generating landing page with AI (5 min timeout)...")
+        html = try_v0_generation(outline, sales_copy, niche, total_videos, colors, font)
+
+        # Retry with higher token limit if truncated
+        if html is None:
+            print("[v0] Retrying with higher token limit (32K)...")
+            html = try_v0_generation(outline, sales_copy, niche, total_videos, colors, font, max_tokens=32000)
+
+        if html:
+            method = "v0"
+            print("[v0] Success — AI-generated landing page")
+        else:
+            print("[v0] Failed — falling back to template")
+    elif not V0_API_KEY:
+        print("[v0] No API key — using template")
+    else:
+        print("[Template] --template-only flag set")
+
+    # ─── FALLBACK: Template ──────────────────────────────────────────
+    if html is None:
+        print("[Template] Generating from template...")
+        html = generate_template(outline, sales_copy, niche, total_videos, colors, font)
+        method = "template"
+
+    # Write output
     output_path.write_text(html, encoding="utf-8")
     size_kb = len(html.encode("utf-8")) / 1024
 
     print()
     print(f"{'=' * 50}")
-    print(f"Local landing page generated!")
-    print(f"  Method:  template")
+    print(f"Landing page generated!")
+    print(f"  Method:  {method}")
     print(f"  Output:  {output_path}")
     print(f"  Size:    {size_kb:.1f} KB")
     print(f"{'=' * 50}")
-
-    # ─── Publish to v0 Platform (premium shareable version) ───────────
-    if args.publish:
-        api_key = os.environ.get("V0_API_KEY")
-        if not api_key:
-            print("\n[PUBLISH] V0_API_KEY not set — skipping v0 Platform publish")
-        else:
-            print(f"\n{'=' * 50}")
-            print("Publishing to v0 Platform (premium version)...")
-            print(f"{'=' * 50}")
-            demo_url, editor_url = publish_to_v0(api_key, outline, sales_copy, niche, total_videos)
-            if demo_url:
-                print(f"\n{'=' * 50}")
-                print(f"v0 Platform published!")
-                print(f"  Demo URL:   {demo_url}")
-                print(f"  Editor URL: {editor_url}")
-                print(f"{'=' * 50}")
-            elif editor_url:
-                print(f"\n[PUBLISH] Editor created but no demo URL: {editor_url}")
-            else:
-                print("\n[PUBLISH] v0 Platform publish failed — local HTML is still available")
 
 
 if __name__ == "__main__":

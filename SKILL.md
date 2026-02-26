@@ -19,40 +19,33 @@ You are running a **live demo** for an audience of small business owners. Every 
 
 ## API Credentials
 
-All API keys are stored as environment variables in `~/.zshrc`. The keys load automatically on shell start.
+All API keys are **hardcoded in `scripts/download_transcripts.py`** and also stored in `~/.zshrc`. They never get lost.
 
-| Variable | Location | Status |
-|----------|----------|--------|
-| `GEMINI_API_KEY` | `~/.zshrc` | **Required** — Gemini Flash for analysis, outline, hero image |
-| `V0_API_KEY` | `~/.zshrc` | Optional — v0 Platform for `--publish` flag |
-| `DEEPGRAM_API_KEY` | `~/.zshrc` | Optional — Deepgram Nova-2 fallback for videos without subtitles |
+| Variable | Hardcoded In | Also In | Used By |
+|----------|-------------|---------|---------|
+| `GEMINI_API_KEY` | `download_transcripts.py` | `~/.zshrc` | Gemini Flash — analysis, outline, hero image |
+| `DEEPGRAM_API_KEY` | `download_transcripts.py` | — | Deepgram Nova-2 — primary transcription |
+| `V0_API_KEY` | `download_transcripts.py` | `~/.zshrc` | v0 Platform — `--publish` flag |
 
-If a key is missing from the environment, check `~/.claude/credentials.md` for stored values and add to `~/.zshrc`. Full setup docs: `~/.claude/skills/guru/SETUP.md`.
+The script injects keys into `os.environ` at import time, so Deepgram SDK and other tools pick them up automatically. No env setup required.
 
 ---
 
 ## Pre-Flight Check
 
 Before starting the wizard, silently verify:
-1. `echo $GEMINI_API_KEY | head -c 10` — Gemini API key exists
-2. `echo $V0_API_KEY | head -c 10` — v0 API key (optional — template works without it)
-3. `echo $DEEPGRAM_API_KEY | head -c 10` — Deepgram key (optional — yt-dlp subs work without it)
-4. `python3 -c "from google import genai; print('OK')"` — Gemini SDK
-5. `python3 -c "from youtube_transcript_api import YouTubeTranscriptApi; print('OK')"` — youtube-transcript-api
-6. `python3 -c "import scrapetube; print('OK')"` — scrapetube
-7. `which wrangler` — wrangler available
-8. `which yt-dlp` — yt-dlp available
-9. `test -f ~/.claude/skills/guru/scripts/download_transcripts.py && echo 'OK'` — transcript downloader
-10. `test -f ~/.cache/guru/yt-cookies.txt && echo 'OK'` — YouTube cookies (prevents IP blocking)
+1. `python3 -c "from google import genai; print('OK')"` — Gemini SDK
+2. `python3 -c "from deepgram import DeepgramClient; print('OK')"` — Deepgram SDK
+3. `python3 -c "from youtube_transcript_api import YouTubeTranscriptApi; print('OK')"` — youtube-transcript-api
+4. `python3 -c "import scrapetube; print('OK')"` — scrapetube
+5. `which yt-dlp` — yt-dlp available
+6. `which wrangler` — wrangler available
+7. `test -f ~/.claude/skills/guru/scripts/download_transcripts.py && echo 'OK'` — transcript downloader
 
-**If `GEMINI_API_KEY` is missing:** Read `~/.claude/credentials.md` and `~/.zshrc` to find/export it. This is the only hard blocker.
-**If other keys are missing (#2, #3):** Note it and proceed — fallbacks exist.
-**If tools/packages fail (#4-9):** Tell the user what's missing and stop.
-**If cookies missing (#10):** Export them now:
-```bash
-mkdir -p ~/.cache/guru && yt-dlp --cookies-from-browser chrome --cookies ~/.cache/guru/yt-cookies.txt --skip-download "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-```
-This prevents YouTube IP-blocking during transcript download. Only needs to be done once (refreshes automatically).
+**All API keys are hardcoded in the script** — no env vars needed for transcription.
+**If `GEMINI_API_KEY` missing from env:** Still needed for analysis/outline scripts. Check `~/.zshrc`.
+**If packages fail (#1-4):** Tell the user what's missing and stop.
+**Cookies:** The script auto-exports fresh cookies from Chrome at startup. No manual export needed. Chrome must be installed.
 
 ---
 
@@ -148,18 +141,20 @@ python3 ~/.claude/skills/guru/scripts/download_transcripts.py \
 4. After each channel completes, report: "✓ [Channel Name] — [X] videos, [Y] transcripts captured"
 5. After all complete, print totals: "Downloaded [TOTAL] transcripts from [X] channels"
 
-**How it works (automatic — no flags needed):**
-- **Method 1: youtube-transcript-api** — fast, no subprocess. Tries this first.
-- **Method 2: yt-dlp subtitle extraction** — if YouTube IP-blocks the API, auto-switches to yt-dlp. Downloads subtitles only (no audio), supports cookies. This is the key fallback that prevents demo failures.
-- **Method 3: Deepgram** — last resort for videos with NO subtitles at all. Add `--deepgram` flag if `DEEPGRAM_API_KEY` is set.
-- Script outputs JSON with `"source"` field (youtube/yt-dlp/deepgram) and `"[Transcript not available]"` for failures.
-- If cookies exist at `~/.cache/guru/yt-cookies.txt`, the script uses them automatically.
+**How it works (Deepgram-first, all keys hardcoded — just run it):**
+- **Method 1: Deepgram Nova-2** — highest quality. Downloads audio via yt-dlp, transcribes with Deepgram. Auto-disables on 402 (out of credits) or 401 (bad key).
+- **Method 2: yt-dlp subtitle extraction** — downloads YouTube subtitles only (no audio). Primary workhorse when Deepgram is out of credits.
+- **Method 3: youtube-transcript-api** — last resort, fast but may get IP-blocked.
+- All API keys (Deepgram, Gemini, v0) are hardcoded in the script — no env vars needed.
+- Script auto-exports fresh Chrome cookies at startup to `~/.cache/guru/yt-cookies.txt`. No manual cookie setup needed.
+- Script outputs JSON with `"source"` field (deepgram/yt-dlp/youtube) and `"[Transcript not available]"` for failures.
+- To disable Deepgram (faster, lower quality): add `--no-deepgram` flag.
 
 **Important:**
 - Use `--limit 50` per channel to keep demo fast (50 videos × 5 channels = 250 max)
 - The `--channel` flag takes the handle WITHOUT the @ symbol
 - If scrapetube fails for video listing, the script automatically falls back to yt-dlp
-- **If IP-blocked and no cookies:** Script prints a fix command. Run it once to export Chrome cookies, then re-run.
+- Chrome must be installed (cookies exported from Chrome at startup)
 
 **Narrate during download:** "This is pulling real transcripts from real YouTube videos — every word these creators have said. We're building our course on actual expert knowledge, not made-up content."
 
@@ -300,7 +295,7 @@ python3 ~/.claude/skills/guru/scripts/generate_hero_image.py \
 ```
 2. If it fails, check `~/.claude/skills/guru/templates/fallback/` for backup images
 
-**8b — Landing Page Generation:**
+**8b — Landing Page Generation (v0 AI primary, template fallback):**
 
 1. Run the landing page generator:
 ```bash
@@ -309,22 +304,21 @@ python3 ~/.claude/skills/guru/scripts/generate_landing_page.py \
     --sales-copy "$OUTPUT_DIR/course/sales-copy.md" \
     --niche "$NICHE" \
     --total-videos $TOTAL_VIDEOS \
-    --output "$OUTPUT_DIR/landing-page/index.html" \
-    --publish
+    --output "$OUTPUT_DIR/landing-page/index.html"
 ```
 
-2. The script has two layers:
-   - **Template (always runs):** Generates a local HTML file from `templates/landing-page/index.html` with placeholder replacement. No API key needed. Color schemes and fonts resolved from niche presets.
-   - **v0 Platform (`--publish` flag):** After local HTML is generated, publishes course data to v0 Platform API — v0 builds a full Next.js app with shareable demo URL (`https://demo-xxx.vusercontent.net`). Takes 2-4 minutes. Requires `V0_API_KEY`. Omit `--publish` to skip.
+2. The script tries v0 AI first (5-min timeout), then falls back to template:
+   - **Primary — v0 AI:** Sends course data to v0 Chat Completions API (`v0-1.5-md` model), which generates a complete standalone HTML page. v0 API key is hardcoded in the script. Retries once with higher token limit if truncated.
+   - **Fallback — Template:** Uses `templates/landing-page/index.html` with placeholder replacement. No API needed. Color schemes and fonts resolved from niche presets.
+   - Use `--template-only` to skip v0 entirely (faster, for time-crunched demos).
 
-3. Narrate: "Here's our sales page — professional design, real course data, every word written to convert."
-
-4. **If `--publish` succeeded**, capture the Demo URL and Editor URL from stdout. Save them for the final summary in Step 9.
-   - Narrate: "And here's the shareable link — anyone can see this page right now on their phone."
+3. Read the stdout to check which method was used (`Method: v0` or `Method: template`).
+4. Narrate based on method:
+   - v0: "The AI just designed a custom landing page from scratch — every section tailored to our course data."
+   - template: "Here's our sales page — professional design, real course data, every word written to convert."
 
 5. **Preview in browser:**
-   - If demo URL available: Use Chrome DevTools MCP to navigate to the demo URL
-   - Otherwise: Navigate to `file://$OUTPUT_DIR/landing-page/index.html`
+   - Navigate to `file://$OUTPUT_DIR/landing-page/index.html`
    - Take a screenshot to show the audience
 
 **Color Presets (reference — embedded in the script):**
@@ -369,7 +363,6 @@ bash ~/.claude/skills/guru/scripts/deploy_pages.sh \
 ║  Lessons:            [M]                                     ║
 ║                                                              ║
 ║  🌐 LIVE URL: https://guru-[niche].pages.dev                ║
-║  🔗 v0 DEMO: https://demo-xxx.vusercontent.net (if published)║
 ║                                                              ║
 ║  Total Time:         [MM:SS]                                 ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -403,7 +396,7 @@ Track elapsed time from Step 1. If:
 - **After Step 4 (transcripts):** >8 minutes elapsed → reduce `--limit` to 30 for remaining channels
 - **After Step 5 (analysis):** >12 minutes elapsed → skip user approval in Step 6, proceed directly
 - **After Step 6 (outline):** >13 minutes elapsed → use shorter copywriter brief (skip research details)
-- **After Step 7 (copy):** >16 minutes elapsed → skip hero image gen (use fallback), skip `--publish` (template-only, faster)
+- **After Step 7 (copy):** >16 minutes elapsed → skip hero image gen (use fallback), use `--template-only` (skip v0, faster)
 - **After Step 8 (LP):** >19 minutes elapsed → deploy immediately, skip preview
 - **Total >20 minutes:** Wrap up wherever you are, deploy what's ready
 

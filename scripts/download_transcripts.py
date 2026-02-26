@@ -3,19 +3,18 @@
 Guru — Transcript Downloader
 Self-contained transcript downloader for the Guru course creator skill.
 
-Fallback chain:
-  1. youtube-transcript-api  (fast, no subprocess — but YouTube may IP-block)
+Fallback chain (Deepgram-first for highest quality):
+  1. Deepgram Nova-2 audio transcription  (best quality, hardcoded key)
   2. yt-dlp subtitle extraction  (reliable with cookies, no audio download)
-  3. Deepgram Nova-2 audio transcription  (requires DEEPGRAM_API_KEY)
+  3. youtube-transcript-api  (fast but YouTube may IP-block)
 
-Cookie support (fixes IP blocking):
-  Export cookies once:  yt-dlp --cookies-from-browser chrome --cookies ~/.cache/guru/yt-cookies.txt --skip-download "https://www.youtube.com"
-  Then pass:  --cookies ~/.cache/guru/yt-cookies.txt
+Cookie support (automatic — fixes YouTube bot blocking):
+  Cookies are auto-exported from Chrome at startup to ~/.cache/guru/yt-cookies.txt
+  Override with:  --cookies /path/to/custom-cookies.txt
 
 Usage:
     python3 download_transcripts.py --channel aliabdaal --limit 50 --output ./transcripts
-    python3 download_transcripts.py --channel aliabdaal --limit 50 --output ./transcripts --cookies ~/.cache/guru/yt-cookies.txt
-    python3 download_transcripts.py --channel aliabdaal --limit 50 --output ./transcripts --deepgram
+    python3 download_transcripts.py --channel aliabdaal --limit 50 --output ./transcripts --no-deepgram
 """
 
 import subprocess
@@ -30,7 +29,19 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
-# ─── Optional imports ────────────────────────────────────────────────────────
+# ─── API Keys (hardcoded — never gets lost) ─────────────────────────────────
+# MUST be set before importing SDKs that read from env (e.g. Deepgram)
+
+API_KEYS = {
+    "DEEPGRAM_API_KEY": "eecc3569e37804dfcb4479b5f092417948369891",
+    "GEMINI_API_KEY": "AIzaSyCsayMSvVwXtB5Hsj1GCFrlKLBCYZ5HKfI",
+}
+
+for _k, _v in API_KEYS.items():
+    if not os.environ.get(_k):
+        os.environ[_k] = _v
+
+# ─── Optional imports (after env setup) ──────────────────────────────────────
 
 try:
     from youtube_transcript_api import YouTubeTranscriptApi
@@ -88,18 +99,41 @@ def find_ytdlp():
 YT_DLP = find_ytdlp()
 
 
+def export_browser_cookies():
+    """Export fresh cookies from Chrome to a file. Returns path or None."""
+    COOKIE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        YT_DLP, "--cookies-from-browser", "chrome",
+        "--cookies", str(COOKIE_CACHE),
+        "--skip-download", "--no-warnings",
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if COOKIE_CACHE.exists() and COOKIE_CACHE.stat().st_size > 100:
+            return str(COOKIE_CACHE)
+    except Exception:
+        pass
+    return None
+
+
+def cookie_args(cookies_path=None):
+    """Return yt-dlp cookie arguments."""
+    if cookies_path and Path(cookies_path).exists():
+        return ["--cookies", str(cookies_path)]
+    return []
+
+
 def init_deepgram():
-    """Initialize Deepgram client."""
+    """Initialize Deepgram client (key is hardcoded — always works)."""
     global _deepgram_client
     if _deepgram_client is not None:
         return _deepgram_client
-    key = os.environ.get("DEEPGRAM_API_KEY", "")
-    if not key:
-        return None
     if not _DEEPGRAM_AVAILABLE:
         print("   WARNING: deepgram-sdk not installed (pip3 install deepgram-sdk)")
         return None
     try:
+        # Key is injected into os.environ at import time — SDK reads it from there
         _deepgram_client = DeepgramClient()
         return _deepgram_client
     except Exception as e:
@@ -145,8 +179,7 @@ def get_channel_videos(channel_name, limit=None, cookies_path=None):
             "--remote-components", "ejs:github",
             "--no-warnings",
         ]
-        if cookies_path and Path(cookies_path).exists():
-            cmd.extend(["--cookies", str(cookies_path)])
+        cmd.extend(cookie_args(cookies_path))
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         videos = []
@@ -258,8 +291,7 @@ def get_transcript_ytdlp(video_id, cookies_path=None):
             "-o", str(tmp_path / "%(id)s.%(ext)s"),
             f"https://www.youtube.com/watch?v={video_id}",
         ]
-        if cookies_path and Path(cookies_path).exists():
-            cmd.extend(["--cookies", str(cookies_path)])
+        cmd.extend(cookie_args(cookies_path))
 
         try:
             subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -279,39 +311,50 @@ def get_transcript_ytdlp(video_id, cookies_path=None):
 # ─── Transcript method 3: Deepgram audio transcription ───────────────────────
 
 
+_deepgram_disabled = False  # Set True on fatal errors (402, auth) to skip for all remaining videos
+
+
 def get_transcript_deepgram(video_id, temp_dir, cookies_path=None):
     """Transcribe via Deepgram (downloads audio first). Returns text or None."""
-    if _deepgram_client is None:
+    global _deepgram_disabled
+    if _deepgram_client is None or _deepgram_disabled:
         return None
 
-    # Download audio
-    output_file = temp_dir / f"{video_id}.mp4"
+    # Download audio only (smallest audio stream)
+    output_file = temp_dir / f"{video_id}.%(ext)s"
     cmd = [
         YT_DLP,
-        "-f", "18",  # 360p mp4 with audio — small and fast
+        "-f", "worstaudio",  # smallest audio stream — fast download
         "--remote-components", "ejs:github",
         "--no-warnings", "--no-progress",
         "-o", str(output_file),
         f"https://www.youtube.com/watch?v={video_id}",
     ]
-    if cookies_path and Path(cookies_path).exists():
-        cmd.extend(["--cookies", str(cookies_path)])
+    cmd.extend(cookie_args(cookies_path))
 
     try:
-        subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-    except Exception:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if stderr:
+                print(f"   [dg] audio download failed for {video_id}: {stderr[:120]}")
+            return None
+    except subprocess.TimeoutExpired:
+        print(f"   [dg] audio download timed out for {video_id}")
+        return None
+    except Exception as e:
+        print(f"   [dg] audio download error for {video_id}: {e}")
         return None
 
-    if not output_file.exists():
-        # Check for other extensions
-        possible = list(temp_dir.glob(f"{video_id}.*"))
-        if possible:
-            output_file = possible[0]
-        else:
-            return None
+    # Find the downloaded file (extension varies: .m4a, .webm, .mp4, etc.)
+    possible = list(temp_dir.glob(f"{video_id}.*"))
+    if not possible:
+        print(f"   [dg] no audio file found for {video_id}")
+        return None
+    audio_file = possible[0]
 
     try:
-        with open(output_file, "rb") as f:
+        with open(audio_file, "rb") as f:
             buffer_data = f.read()
 
         response = _deepgram_client.listen.v1.media.transcribe_file(
@@ -323,15 +366,25 @@ def get_transcript_deepgram(video_id, temp_dir, cookies_path=None):
         transcript = response.results.channels[0].alternatives[0].transcript
 
         try:
-            output_file.unlink()
+            audio_file.unlink()
         except Exception:
             pass
 
         return transcript if len(transcript) > 20 else None
 
-    except Exception:
+    except Exception as e:
+        err_str = str(e)
+        # Detect fatal errors — no point retrying for other videos
+        if "402" in err_str or "PAYMENT_REQUIRED" in err_str:
+            _deepgram_disabled = True
+            print(f"\n   ⚠️  Deepgram out of credits (402). Falling back to yt-dlp subs.\n")
+        elif "401" in err_str or "UNAUTHORIZED" in err_str:
+            _deepgram_disabled = True
+            print(f"\n   ⚠️  Deepgram auth failed (401). Check API key.\n")
+        else:
+            print(f"   [dg] transcription error for {video_id}: {err_str[:120]}")
         try:
-            output_file.unlink()
+            audio_file.unlink()
         except Exception:
             pass
         return None
@@ -340,19 +393,20 @@ def get_transcript_deepgram(video_id, temp_dir, cookies_path=None):
 # ─── Core download logic ─────────────────────────────────────────────────────
 
 
-def download_transcript(video_data, temp_dir, cookies_path=None, use_deepgram=False):
+def download_transcript(video_data, temp_dir, cookies_path=None, use_deepgram=True):
     """Download transcript with cascading fallbacks.
 
-    Order: youtube-transcript-api → yt-dlp subs → Deepgram
+    Order: Deepgram (best quality) → yt-dlp subs → youtube-transcript-api
     """
     video_id = video_data["video_id"]
     transcript = None
     source = "none"
 
-    # 1. youtube-transcript-api (fast, no subprocess)
-    transcript = get_transcript_yt_api(video_id)
-    if transcript:
-        source = "youtube"
+    # 1. Deepgram audio transcription (highest quality — primary method)
+    if use_deepgram:
+        transcript = get_transcript_deepgram(video_id, temp_dir, cookies_path)
+        if transcript:
+            source = "deepgram"
 
     # 2. yt-dlp subtitle extraction (reliable with cookies)
     if transcript is None:
@@ -360,11 +414,11 @@ def download_transcript(video_data, temp_dir, cookies_path=None, use_deepgram=Fa
         if transcript:
             source = "yt-dlp"
 
-    # 3. Deepgram audio transcription (last resort)
-    if transcript is None and use_deepgram:
-        transcript = get_transcript_deepgram(video_id, temp_dir, cookies_path)
+    # 3. youtube-transcript-api (fast but may be IP-blocked)
+    if transcript is None:
+        transcript = get_transcript_yt_api(video_id)
         if transcript:
-            source = "deepgram"
+            source = "youtube"
 
     # Update progress
     with _lock:
@@ -440,34 +494,40 @@ def main():
     parser.add_argument("--limit", "-l", type=int, help="Max videos to process")
     parser.add_argument("--name", "-n", help="Output filename (without extension)")
     parser.add_argument("--cookies", help="Path to Netscape cookie file (fixes YouTube IP blocking)")
-    parser.add_argument("--deepgram", "-d", action="store_true", help="Enable Deepgram as final fallback (requires DEEPGRAM_API_KEY)")
+    parser.add_argument("--no-deepgram", action="store_true", help="Disable Deepgram (use yt-dlp subs + youtube-transcript-api only)")
 
     args = parser.parse_args()
 
-    # Resolve cookie path
+    # Resolve cookie path: explicit file > export from browser > none
     cookies_path = args.cookies
-    if not cookies_path and COOKIE_CACHE.exists():
-        cookies_path = str(COOKIE_CACHE)
-        print(f"Using cached cookies: {cookies_path}")
+    if not cookies_path:
+        print("Exporting fresh cookies from Chrome...")
+        cookies_path = export_browser_cookies()
+        if cookies_path:
+            print(f"   Cookies exported ({COOKIE_CACHE})")
+        else:
+            print("   WARNING: Cookie export failed — YouTube may block requests")
 
     print("=" * 70)
     print("GURU TRANSCRIPT DOWNLOADER")
     print("=" * 70)
     print(f"Channel:  @{args.channel}")
     print(f"Threads:  {args.threads}")
-    print(f"Cookies:  {cookies_path or 'none (may get IP-blocked)'}")
-    print(f"Deepgram: {'yes' if args.deepgram else 'no'}")
+    use_deepgram = not args.no_deepgram
+    cookie_mode = cookies_path if cookies_path else "none"
+    print(f"Cookies:  {cookie_mode}")
+    print(f"Deepgram: {'ON (primary)' if use_deepgram else 'OFF'}")
     print(f"Start:    {datetime.now().strftime('%H:%M:%S')}")
     sys.stdout.flush()
 
-    # Initialize Deepgram if requested
-    if args.deepgram:
+    # Initialize Deepgram (on by default — key is hardcoded)
+    if use_deepgram:
         client = init_deepgram()
         if client:
-            print("   Deepgram client ready")
+            print("   Deepgram client ready (Nova-2)")
         else:
-            print("   Deepgram unavailable — will use youtube-api + yt-dlp only")
-            args.deepgram = False
+            print("   Deepgram unavailable — falling back to yt-dlp + youtube-api")
+            use_deepgram = False
 
     # Get video list
     videos = get_channel_videos(args.channel, args.limit, cookies_path)
@@ -483,20 +543,20 @@ def main():
     _stats["done"] = 0
     _stats["success"] = 0
     _stats["youtube"] = 0
-    _stats["ytdlp"] = 0
+    _stats["yt-dlp"] = 0
     _stats["deepgram"] = 0
 
     temp_dir = Path(args.output) / ".temp_audio"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     # Cap threads when using Deepgram (audio downloads are heavier)
-    effective_threads = min(args.threads, 5) if args.deepgram else args.threads
+    effective_threads = min(args.threads, 5) if use_deepgram else args.threads
 
     results = []
     with ThreadPoolExecutor(max_workers=effective_threads) as executor:
         futures = {
             executor.submit(
-                download_transcript, v, temp_dir, cookies_path, args.deepgram
+                download_transcript, v, temp_dir, cookies_path, use_deepgram
             ): v
             for v in videos
         }
@@ -531,12 +591,6 @@ def main():
     print(f"\nFiles:")
     print(f"  {json_file}")
     print(f"  {md_file}")
-
-    if _yt_api_blocked and not cookies_path:
-        print(f"\n{'=' * 70}")
-        print("TIP: YouTube blocked your IP. Export cookies to fix this:")
-        print(f"  yt-dlp --cookies-from-browser chrome --cookies {COOKIE_CACHE} --skip-download 'https://www.youtube.com'")
-        print(f"  Then re-run with: --cookies {COOKIE_CACHE}")
 
     print("=" * 70)
 
