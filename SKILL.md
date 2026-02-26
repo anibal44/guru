@@ -27,8 +27,9 @@ Before starting the wizard, silently verify:
 5. `which wrangler` — wrangler available
 6. `which yt-dlp` — yt-dlp available
 7. `test -f ~/bin/download_transcripts_v2.py && echo 'OK'` — transcript downloader v2
+8. `echo $V0_API_KEY | head -c 10` — v0 API key (optional — template fallback works without it)
 
-If anything fails, tell the user what's missing and stop. Don't proceed with a broken setup.
+If anything fails (except #8 which is optional), tell the user what's missing and stop. Don't proceed with a broken setup.
 
 ---
 
@@ -116,8 +117,9 @@ mkdir -p "$OUTPUT_DIR"/{research,transcripts,course,landing-page/assets}
 python3 ~/bin/download_transcripts_v2.py \
     --channel {HANDLE_WITHOUT_AT} \
     --output "$OUTPUT_DIR/transcripts" \
-    --threads 10 \
+    --threads 5 \
     --limit 50 \
+    --deepgram-first \
     --name "{HANDLE}_transcripts_v2"
 ```
 3. Run channels sequentially (parallel would cause rate limits)
@@ -125,12 +127,13 @@ python3 ~/bin/download_transcripts_v2.py \
 5. After all complete, print totals: "Downloaded [TOTAL] transcripts from [X] channels"
 
 **Important:**
-- Uses `download_transcripts_v2.py` which uses `youtube-transcript-api` directly (much faster than yt-dlp subtitles)
+- **Primary transcription: Deepgram** (`--deepgram-first`) — downloads audio via yt-dlp, transcribes with Deepgram Nova-2. Higher quality than auto-captions. Requires `DEEPGRAM_API_KEY`.
+- **Fallback: youtube-transcript-api** — if Deepgram fails for a video, falls back to YouTube's auto-generated captions (free, fast, no audio download).
+- If `DEEPGRAM_API_KEY` is not set, omit `--deepgram-first` and use `--deepgram` as optional fallback, or just use YouTube captions only.
 - Use `--limit 50` per channel to keep demo fast (50 videos × 5 channels = 250 max)
 - The `--channel` flag takes the handle WITHOUT the @ symbol
-- Default threads is 10 (the v2 script's default)
+- Use `--threads 5` when using Deepgram (caps parallelism for audio downloads)
 - The v2 script outputs JSON with `"source"` field (youtube/deepgram/whisper) and uses `"[Transcript not available]"` for failures
-- **Optional:** Add `--deepgram` flag if DEEPGRAM_API_KEY is set (transcribes videos without captions via Deepgram API)
 - **Optional:** Add `--whisper` flag for free local transcription fallback (slower, no API key needed)
 - If scrapetube fails for a channel, try with `yt-dlp --flat-playlist "https://www.youtube.com/@{HANDLE}/videos" --print id | head -50` to get video IDs
 
@@ -273,115 +276,52 @@ python3 ~/.claude/skills/guru/scripts/generate_hero_image.py \
 ```
 2. If it fails, check `~/.claude/skills/guru/templates/fallback/` for backup images
 
-**8b — Landing Page Assembly (powered by copywriter output):**
-1. Read the template from `~/.claude/skills/guru/templates/landing-page/index.html`
-2. Read `$OUTPUT_DIR/course/outline.json` for course structure data
-3. **Read `$OUTPUT_DIR/course/sales-copy.md` for ALL copy** — this is the primary source for text
-4. Choose a niche-appropriate color scheme and Google Font:
+**8b — Landing Page Generation (v0 AI-Powered):**
 
-**Color Presets:**
-| Niche | Primary | Primary Dark | Secondary | Accent | Font |
-|-------|---------|-------------|-----------|--------|------|
-| productivity | #6366f1 | #4f46e5 | #1e1b4b | #a78bfa | Inter |
-| cooking | #ea580c | #c2410c | #431407 | #fb923c | DM+Sans |
-| personal finance | #059669 | #047857 | #022c22 | #34d399 | Plus+Jakarta+Sans |
-| fitness | #dc2626 | #b91c1c | #450a0a | #f87171 | Outfit |
-| marketing | #7c3aed | #6d28d9 | #2e1065 | #c084fc | Space+Grotesk |
-| meditation | #0d9488 | #0f766e | #042f2e | #5eead4 | Nunito |
-| photography | #d97706 | #b45309 | #451a03 | #fbbf24 | Sora |
-| programming | #2563eb | #1d4ed8 | #172554 | #60a5fa | JetBrains+Mono |
-| design | #e11d48 | #be123c | #4c0519 | #fb7185 | Satoshi |
-| business | #1d4ed8 | #1e40af | #172554 | #93c5fd | Inter |
-| default | #6366f1 | #4f46e5 | #1e1b4b | #a78bfa | Inter |
+1. Run the landing page generator script with `--publish` to get a shareable v0 link:
+```bash
+python3 ~/.claude/skills/guru/scripts/generate_landing_page.py \
+    --outline "$OUTPUT_DIR/course/outline.json" \
+    --sales-copy "$OUTPUT_DIR/course/sales-copy.md" \
+    --niche "$NICHE" \
+    --total-videos $TOTAL_VIDEOS \
+    --output "$OUTPUT_DIR/landing-page/index.html" \
+    --publish
+```
 
-5. **Replace ALL placeholders using BOTH the sales copy AND the outline data:**
+2. The script handles everything automatically:
+   - **Primary:** Calls v0 Model API (`v0-1.5-md`) to generate a premium, dark-themed standalone HTML landing page
+   - **Retry:** If v0 output is truncated, retries with higher token limit (32K)
+   - **Fallback:** If v0 fails or `V0_API_KEY` is not set, uses `templates/landing-page/index.html` with placeholder replacement
+   - **Publish (`--publish`):** After HTML generation, publishes to v0 Platform API — creates a project + chat with course data, v0 generates a full Next.js app with shareable demo URL (`https://demo-xxx.vusercontent.net`). Takes 2-4 minutes.
+   - Color schemes and fonts are resolved automatically from niche presets (see script for full table)
 
-   **From sales-copy.md (copywriter output — primary source for text):**
-   - `{{COURSE_TITLE_HTML}}` — Use the copywriter's HEADLINE. Split into plain + `<span class="highlight">` for the power words
-   - `{{COURSE_SUBTITLE}}` — Use the copywriter's SUBHEAD
-   - `{{PAIN_POINTS}}` — Rewrite the copywriter's lead/pain paragraphs as individual cards
-   - `{{FAQ_ITEMS}}` — Use the copywriter's objection handling, or extract from the P.S. and body
-   - Hero proof snippet — Use a line from the copywriter's proof stack
+3. Check stdout for the method used (`v0`, `v0 (with warnings)`, or `template`) and narrate accordingly:
+   - v0 success: "Our AI designer just built this page from scratch — custom layout, responsive design, the works."
+   - Template fallback: "Here's our sales page — professional template, real course data, deployed design."
 
-   **From outline.json (course structure — primary source for curriculum):**
-   - `{{TOTAL_MODULES}}` / `{{TOTAL_LESSONS}}` — counts
-   - `{{MODULE_CARDS}}` — module titles + descriptions from outline
-   - `{{CURRICULUM_ACCORDION}}` — full lesson breakdown from outline
-   **From context (niche + stats):**
-   - `{{NICHE}}` / `{{NICHE_CAPITALIZED}}`
-   - `{{TOTAL_VIDEOS}}`
-   - `{{HERO_IMAGE}}` — `assets/hero.jpg`
-   - `{{PRIMARY_COLOR}}` / `{{PRIMARY_DARK}}` / `{{SECONDARY_COLOR}}` / `{{ACCENT_COLOR}}`
-   - `{{FONT_FAMILY}}`
-   - `{{YEAR}}`
+4. **If `--publish` succeeded**, capture the Demo URL and Editor URL from stdout. Save them for the final summary in Step 9.
+   - Narrate: "And here's the shareable link — anyone can see this page right now on their phone."
 
-6. **Generate HTML blocks** for dynamic sections:
-
-   **{{PAIN_POINTS}}** — Extract from the copywriter's lead paragraphs. Generate cards:
-   ```html
-   <div class="pain-card reveal reveal-delay-N">
-       <div class="pain-icon">😤</div>
-       <p>[pain point from sales copy]</p>
-   </div>
-   ```
-
-   **{{MODULE_CARDS}}** — From outline + copywriter bullet battery for hooks:
-   ```html
-   <div class="module-card reveal reveal-delay-N">
-       <span class="module-number">Module N</span>
-       <span class="module-icon">[emoji]</span>
-       <h3>[Module Title]</h3>
-       <p>[Copywriter hook OR module description]</p>
-       <div class="module-lessons-count">[X] lessons</div>
-   </div>
-   ```
-
-   **{{CURRICULUM_ACCORDION}}** — From outline (lessons + outcomes):
-   ```html
-   <div class="accordion-item">
-       <button class="accordion-trigger">
-           <span><span class="mod-label">Module N</span> [Module Title]</span>
-           <span class="chevron">▼</span>
-       </button>
-       <div class="accordion-content">
-           <div class="accordion-body">
-               <ul class="lesson-list">
-                   <li class="lesson-item">
-                       <span class="lesson-num">N.N</span>
-                       <div class="lesson-info">
-                           <h4>[Lesson Title]</h4>
-                           <p>[Learning Outcome]</p>
-                       </div>
-                   </li>
-               </ul>
-           </div>
-       </div>
-   </div>
-   ```
-
-   **{{FAQ_ITEMS}}** — Extract objections from the sales copy. If the copywriter didn't include explicit FAQs, generate them from the risk reversal and objection handling in the letter:
-   ```html
-   <div class="accordion-item">
-       <button class="accordion-trigger">
-           <span>[Question derived from sales copy objections]</span>
-           <span class="chevron">▼</span>
-       </button>
-       <div class="accordion-content">
-           <div class="accordion-body">
-               <p>[Answer from sales copy]</p>
-           </div>
-       </div>
-   </div>
-   ```
-
-   **Pricing section copy** — Use the copywriter's offer presentation and guarantee language directly. Don't rewrite it.
-
-7. Write the final assembled HTML to `$OUTPUT_DIR/landing-page/index.html`
-
-8. **Preview in browser:**
-   - Use Chrome DevTools MCP to navigate to `file://$OUTPUT_DIR/landing-page/index.html`
+5. **Preview in browser:**
+   - If demo URL available: Use Chrome DevTools MCP to navigate to the demo URL
+   - Otherwise: Navigate to `file://$OUTPUT_DIR/landing-page/index.html`
    - Take a screenshot to show the audience
-   - Narrate: "Here's our sales page — professional copy, real course data, deployed design. Every word on this page was written to convert."
+   - Narrate: "Every word on this page was written to convert."
+
+**Color Presets (reference — embedded in the script):**
+| Niche | Primary | Font |
+|-------|---------|------|
+| productivity | #6366f1 | Inter |
+| cooking | #ea580c | DM Sans |
+| personal finance | #059669 | Plus Jakarta Sans |
+| fitness | #dc2626 | Outfit |
+| marketing | #7c3aed | Space Grotesk |
+| meditation | #0d9488 | Nunito |
+| photography | #d97706 | Sora |
+| programming | #2563eb | JetBrains Mono |
+| design | #e11d48 | Satoshi |
+| business | #1d4ed8 | Inter |
 
 ---
 
@@ -411,6 +351,7 @@ bash ~/.claude/skills/guru/scripts/deploy_pages.sh \
 ║  Lessons:            [M]                                     ║
 ║                                                              ║
 ║  🌐 LIVE URL: https://guru-[niche].pages.dev                ║
+║  🔗 v0 DEMO: https://demo-xxx.vusercontent.net (if published)║
 ║                                                              ║
 ║  Total Time:         [MM:SS]                                 ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -444,7 +385,7 @@ Track elapsed time from Step 1. If:
 - **After Step 4 (transcripts):** >8 minutes elapsed → reduce `--limit` to 30 for remaining channels
 - **After Step 5 (analysis):** >12 minutes elapsed → skip user approval in Step 6, proceed directly
 - **After Step 6 (outline):** >13 minutes elapsed → use shorter copywriter brief (skip research details)
-- **After Step 7 (copy):** >16 minutes elapsed → skip hero image gen (use fallback), simplify LP assembly
+- **After Step 7 (copy):** >16 minutes elapsed → skip hero image gen (use fallback), skip v0 (use `--force-fallback` flag)
 - **After Step 8 (LP):** >19 minutes elapsed → deploy immediately, skip preview
 - **Total >20 minutes:** Wrap up wherever you are, deploy what's ready
 

@@ -1,0 +1,9 @@
+# Output data
+output/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc

@@ -17,7 +17,12 @@ except ImportError:
     sys.exit(1)
 
 
-MODEL = "gemini-2.0-flash-preview-image-generation"
+IMAGE_MODELS = [
+    "gemini-2.0-flash-exp-image-generation",
+    "gemini-2.5-flash-image",
+    "imagen-4.0-fast-generate-001",
+]
+MODEL = IMAGE_MODELS[0]
 
 NICHE_STYLES = {
     "productivity": "minimalist workspace with organized desk, morning light, clean lines, professional",
@@ -72,31 +77,50 @@ def generate_hero(niche: str, output_path: str, retries: int = 2) -> str:
 
     client = genai.Client(api_key=api_key)
 
-    for attempt in range(retries):
-        try:
-            print(f"Generating hero image for '{niche}' (attempt {attempt + 1})...")
-            response = client.models.generate_content(
-                model=MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE", "TEXT"],
-                )
-            )
+    for model_name in IMAGE_MODELS:
+        for attempt in range(retries):
+            try:
+                print(f"Generating hero image for '{niche}' with {model_name} (attempt {attempt + 1})...")
 
-            # Extract image from response
-            for part in response.candidates[0].content.parts:
-                if part.inline_data and part.inline_data.mime_type.startswith("image/"):
-                    image_data = part.inline_data.data
-                    with open(output, "wb") as f:
-                        f.write(image_data)
-                    print(f"Hero image saved to {output}")
-                    print(f"Size: {len(image_data):,} bytes")
-                    return str(output)
+                # Imagen models use a different API
+                if model_name.startswith("imagen"):
+                    from google.genai.types import GenerateImagesConfig
+                    response = client.models.generate_images(
+                        model=model_name,
+                        prompt=prompt,
+                        config=GenerateImagesConfig(number_of_images=1),
+                    )
+                    if response.generated_images:
+                        image_data = response.generated_images[0].image.image_bytes
+                        with open(output, "wb") as f:
+                            f.write(image_data)
+                        print(f"Hero image saved to {output}")
+                        print(f"Size: {len(image_data):,} bytes")
+                        return str(output)
+                else:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_modalities=["IMAGE", "TEXT"],
+                        )
+                    )
 
-            print(f"Attempt {attempt + 1}: No image in response")
+                    # Extract image from response
+                    for part in response.candidates[0].content.parts:
+                        if part.inline_data and part.inline_data.mime_type.startswith("image/"):
+                            image_data = part.inline_data.data
+                            with open(output, "wb") as f:
+                                f.write(image_data)
+                            print(f"Hero image saved to {output}")
+                            print(f"Size: {len(image_data):,} bytes")
+                            return str(output)
 
-        except Exception as e:
-            print(f"Attempt {attempt + 1} failed: {e}")
+                print(f"Attempt {attempt + 1}: No image in response")
+
+            except Exception as e:
+                print(f"Attempt {attempt + 1} with {model_name} failed: {e}")
+        print(f"Model {model_name} exhausted, trying next...")
 
     # Fallback: check for pre-generated images
     fallback_dir = Path(__file__).parent.parent / "templates" / "fallback"

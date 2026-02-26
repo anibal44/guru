@@ -68,7 +68,72 @@ Requirements:
 
 ---
 
-## 3. Landing Page Copy Enhancement (optional, in SKILL.md)
+## 3. v0 Landing Page Generation Prompt
+
+Used in `generate_landing_page.py`. Generates a full standalone HTML landing page via v0 API.
+
+**API:** `POST https://api.v0.dev/v1/chat/completions` (OpenAI-compatible)
+**Model:** `v0-1.5-md` (128K input, 64K output)
+**Auth:** Bearer token via `V0_API_KEY` env var
+**Config:** `max_completion_tokens=16000` (retry with 32000), `stream=false`
+
+**System prompt** — prescriptive design constraints:
+```
+You are a world-class landing page designer. Generate a SINGLE, COMPLETE, STANDALONE HTML file.
+
+CRITICAL RULES:
+- Output ONLY a single HTML file with ALL CSS inline in a <style> tag
+- NO React, NO JSX, NO components, NO imports, NO build steps
+- NO external dependencies except ONE Google Fonts link
+- Dark theme ONLY (background: #0a0a0a)
+- Mobile-first responsive design
+- Use CSS custom properties for colors
+- Include IntersectionObserver for scroll reveal animations
+- Include accordion JS for curriculum and FAQ sections
+
+COLOR SCHEME: Uses niche-specific colors from NICHE_COLORS dict
+FONT: Niche-specific Google Font
+
+REQUIRED SECTIONS (exact order):
+1. HERO — Full viewport, gradient title, stats bar, CTA → #pricing
+2. PAIN POINTS — Emoji card grid from sales copy
+3. MODULES — Card grid with number, icon, title, hook, lesson count
+4. CURRICULUM ACCORDION — Expandable per-module, first open by default
+5. PRICING — $97, feature checklist, guarantee badge
+6. FAQ — Accordion, objection handling
+7. FOOTER — Final CTA + copyright
+```
+
+**User message** contains JSON with: course title, subtitle, niche, total modules/lessons/videos, pain points array, modules array with lessons, and optionally truncated sales copy (first 6000 chars).
+
+**HTML Extraction Logic:**
+1. Try markdown code fence: ` ```html ... ``` `
+2. Try raw `<!DOCTYPE html>...</html>`
+3. Content starts with `<!doctype`
+4. Else: extraction failed → fallback to template
+
+**Validation Checks:**
+- Starts with `<!DOCTYPE html>`, ends with `</html>`
+- Contains `<style>` tag
+- Contains `id="pricing"`
+- Has 3+ `<section` tags
+- Size between 5KB and 200KB
+- Course title text is present
+- No React/JSX indicators
+
+**Error Handling:**
+| Scenario | Action |
+|----------|--------|
+| V0_API_KEY not set | Skip v0, use template fallback |
+| API timeout (120s) | Retry once with 32K tokens, then fallback |
+| HTTP 429 (rate limit) | Fallback immediately |
+| Truncated HTML | Retry with max_tokens=32000 |
+| React/JSX output | Fallback immediately (v0 tends to repeat) |
+| sales-copy.md missing | Use outline data + generic copy |
+
+---
+
+## 4. Landing Page Copy Enhancement (optional, in SKILL.md)
 
 Used inline by Claude when customizing the LP template. Not a separate script.
 
